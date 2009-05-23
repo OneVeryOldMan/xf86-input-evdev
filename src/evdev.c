@@ -134,7 +134,9 @@ static Atom prop_btn_label = 0;
 
 #define remapKey(ev,x) (ev->keyremap && ev->keyremap->sl[(x)/256] ? ev->keyremap->sl[(x)/256]->cd[(x)%256] : (x))
 
-void addRemap(EvdevPtr ev,uint16_t code,uint8_t value) {
+static void
+addRemap(EvdevPtr ev,uint16_t code,uint8_t value)
+{
   uint8_t slice=code/256;
   uint8_t offs=code%256;
   if (!ev->map) {
@@ -148,7 +150,9 @@ void addRemap(EvdevPtr ev,uint16_t code,uint8_t value) {
   ev->map->sl[slice]->cd[offs]=value;
 }
 
-void freeRemap(EvdevPtr ev) {
+static void
+freeRemap(EvdevPtr ev)
+{
   uint16_t slice;
   if (!ev->map) return;
   for (slice=0;slice<256;++slice) {
@@ -272,6 +276,21 @@ SetXkbOption(InputInfoPtr pInfo, char *name, char **option)
             *option = s;
         }
     }
+}
+
+static void
+SetRemapOption(InputInfoPtr pInfo,char* name,EvdevPtr ev)
+{
+    char *s;
+
+    s = xf86SetStrOption(pInfo->options, name, NULL);
+    if (!s) return;
+    if (!s[0]) {
+      xfree(s);
+      return;
+    }
+
+    
 }
 
 static int wheel_up_button = 4;
@@ -1204,6 +1223,8 @@ EvdevAddKeyClass(DeviceIntPtr device)
     if (!pEvdev->rmlvo.options)
         SetXkbOption(pInfo, "XkbOptions", &pEvdev->rmlvo.options);
 
+    SetRemapOption(pInfo,"event_key_remap",pEvdev);
+
 #if GET_ABI_MAJOR(ABI_XINPUT_VERSION) >= 5
     if (!InitKeyboardDeviceStruct(device, &pEvdev->rmlvo, NULL, EvdevKbdCtrl))
         return !Success;
@@ -1684,6 +1705,7 @@ EvdevProc(DeviceIntPtr device, int what)
             pInfo->fd = -1;
         }
         EvdevRemoveDevice(pInfo);
+        freeRemap(pEvdev);
         pEvdev->min_maj = 0;
 	break;
     }
