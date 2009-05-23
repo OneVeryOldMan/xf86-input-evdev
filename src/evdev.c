@@ -133,7 +133,7 @@ static Atom prop_btn_label = 0;
 #endif
 
 static uint16_t
-remapKey(EvdevPtr ev, uint16_t code) 
+remapKey(EvdevPtr ev, uint16_t code)
 {
     uint8_t slice=code/256;
     uint8_t offs=code%256;

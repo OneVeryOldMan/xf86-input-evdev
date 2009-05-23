@@ -195,6 +195,7 @@ the equal sign must be an X11 keycode (look it up in the
 file; it can be between 8 and 255). Integers can be specified as in C
 source files (base-10, base-8 if they start with 0, base-16 if they
 start with 0x).
+
 .SH SUPPORTED PROPERTIES
 The following properties are provided by the
 .B evdev
