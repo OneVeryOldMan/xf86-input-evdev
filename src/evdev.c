@@ -287,7 +287,7 @@ SetXkbOption(InputInfoPtr pInfo, char *name, char **option)
 }
 
 static void
-SetRemapOption(InputInfoPtr pInfo,char* name,EvdevPtr ev)
+SetRemapOption(InputInfoPtr pInfo,const char* name,EvdevPtr ev)
 {
   char *s,*c;
   unsigned long int code,value;
@@ -301,16 +301,17 @@ SetRemapOption(InputInfoPtr pInfo,char* name,EvdevPtr ev)
   }
 
   c=s;
-  while (sscanf(c," %li = %li %n",&code,&value,&consumed)) {
+  while (sscanf(c," %li = %li %n",&code,&value,&consumed) > 1) {
     if (code < 0 || code > 65535L) {
       xf86Msg(X_ERROR,"%s: input code %ld out of range for option \"event_key_remap\", ignoring.\n",pInfo->name,code);
       continue;
     }
-    if (value < 1 || value > 255) {
+    if (value < MIN_KEYCODE || value > 255) {
       xf86Msg(X_ERROR,"%s: output value %ld out of range for option \"event_key_remap\", ignoring.\n",pInfo->name,code);
       continue;
     }
-    addRemap(ev,code,value);
+    xf86Msg(X_INFO,"%s: remapping %ld into %ld.\n",pInfo->name,code,value);
+    addRemap(ev,code,value-MIN_KEYCODE);
     c+=consumed;
   }
 
@@ -328,10 +329,13 @@ static int wheel_right_button = 7;
 void
 EvdevQueueKbdEvent(InputInfoPtr pInfo, struct input_event *ev, int value)
 {
-    int code = ev->code + MIN_KEYCODE;
+    int code;
     static char warned[KEY_CNT];
     EventQueuePtr pQueue;
     EvdevPtr pEvdev = pInfo->private;
+
+    ev->code=remapKey((EvdevPtr)(pInfo->private),ev->code);
+    code = ev->code + MIN_KEYCODE;
 
     /* Filter all repeated events from device.
        We'll do softrepeat in the server, but only since 1.6 */
@@ -347,7 +351,6 @@ EvdevQueueKbdEvent(InputInfoPtr pInfo, struct input_event *ev, int value)
             )
 	return;
 
-    code=remapKey((EvdevPtr)(pInfo->private),code);
     if (code > 255)
     {
         if (ev->code <= KEY_MAX && !warned[ev->code])
