@@ -135,40 +135,41 @@ static Atom prop_btn_label = 0;
 static uint16_t
 remapKey(EvdevPtr ev, uint16_t code) 
 {
-  uint8_t slice=code/256;
-  uint8_t offs=code%256;
+    uint8_t slice=code/256;
+    uint8_t offs=code%256;
 
-  if (!ev->keyremap) return code;
-  if (!(ev->keyremap->sl[slice])) return code;
-  if (!(ev->keyremap->sl[slice]->cd[offs])) return code;
-  return ev->keyremap->sl[slice]->cd[offs];
+    if (!ev->keyremap) return code;
+    if (!(ev->keyremap->sl[slice])) return code;
+    if (!(ev->keyremap->sl[slice]->cd[offs])) return code;
+    return ev->keyremap->sl[slice]->cd[offs];
 }
 
 static void
 addRemap(EvdevPtr ev,uint16_t code,uint8_t value)
 {
-  uint8_t slice=code/256;
-  uint8_t offs=code%256;
-  if (!ev->keyremap) {
-    ev->keyremap=(EvdevKeyRemapPtr)xcalloc(1,sizeof(EvdevKeyRemap));
-  }
-  if (!ev->keyremap->sl[slice]) {
-    ev->keyremap->sl[slice]=(EvdevKeyRemapSlice*)xcalloc(1,sizeof(EvdevKeyRemapSlice));
-  }
-  ev->keyremap->sl[slice]->cd[offs]=value;
+    uint8_t slice=code/256;
+    uint8_t offs=code%256;
+
+    if (!ev->keyremap) {
+        ev->keyremap=(EvdevKeyRemapPtr)xcalloc(1,sizeof(EvdevKeyRemap));
+    }
+    if (!ev->keyremap->sl[slice]) {
+        ev->keyremap->sl[slice]=(EvdevKeyRemapSlice*)xcalloc(1,sizeof(EvdevKeyRemapSlice));
+     }
+     ev->keyremap->sl[slice]->cd[offs]=value;
 }
 
 static void
 freeRemap(EvdevPtr ev)
 {
-  uint16_t slice;
-  if (!ev->keyremap) return;
-  for (slice=0;slice<256;++slice) {
-    if (!ev->keyremap->sl[slice]) continue;
-    xfree(ev->keyremap->sl[slice]);
-  }
-  xfree(ev->keyremap);
-  ev->keyremap=0;
+    uint16_t slice;
+    if (!ev->keyremap) return;
+    for (slice=0;slice<256;++slice) {
+        if (!ev->keyremap->sl[slice]) continue;
+        xfree(ev->keyremap->sl[slice]);
+    }
+    xfree(ev->keyremap);
+    ev->keyremap=0;
 }
 
 /* All devices the evdev driver has allocated and knows about.
@@ -289,36 +290,36 @@ SetXkbOption(InputInfoPtr pInfo, char *name, char **option)
 static void
 SetRemapOption(InputInfoPtr pInfo,const char* name,EvdevPtr ev)
 {
-  char *s,*c;
-  unsigned long int code,value;
-  int consumed;
+    char *s,*c;
+    unsigned long int code,value;
+    int consumed;
 
-  s = xf86SetStrOption(pInfo->options, name, NULL);
-  if (!s) return;
-  if (!s[0]) {
-    xfree(s);
-    return;
-  }
-
-  c=s;
-  while (sscanf(c," %li = %li %n",&code,&value,&consumed) > 1) {
-    if (code < 0 || code > 65535L) {
-      xf86Msg(X_ERROR,"%s: input code %ld out of range for option \"event_key_remap\", ignoring.\n",pInfo->name,code);
-      continue;
+    s = xf86SetStrOption(pInfo->options, name, NULL);
+    if (!s) return;
+    if (!s[0]) {
+        xfree(s);
+        return;
     }
-    if (value < MIN_KEYCODE || value > 255) {
-      xf86Msg(X_ERROR,"%s: output value %ld out of range for option \"event_key_remap\", ignoring.\n",pInfo->name,code);
-      continue;
-    }
-    xf86Msg(X_INFO,"%s: remapping %ld into %ld.\n",pInfo->name,code,value);
-    addRemap(ev,code,value-MIN_KEYCODE);
-    c+=consumed;
-  }
 
-  if (*c!='\0') {
-    xf86Msg(X_ERROR, "%s: invalid input for option \"event_key_remap\" starting at '%s', ignoring.\n",
-            pInfo->name, c);
-  }
+    c=s;
+    while (sscanf(c," %li = %li %n",&code,&value,&consumed) > 1) {
+        if (code < 0 || code > 65535L) {
+            xf86Msg(X_ERROR,"%s: input code %ld out of range for option \"event_key_remap\", ignoring.\n",pInfo->name,code);
+            continue;
+        }
+        if (value < MIN_KEYCODE || value > 255) {
+            xf86Msg(X_ERROR,"%s: output value %ld out of range for option \"event_key_remap\", ignoring.\n",pInfo->name,code);
+            continue;
+        }
+        xf86Msg(X_INFO,"%s: remapping %ld into %ld.\n",pInfo->name,code,value);
+        addRemap(ev,code,value-MIN_KEYCODE);
+        c+=consumed;
+    }
+
+    if (*c!='\0') {
+        xf86Msg(X_ERROR, "%s: invalid input for option \"event_key_remap\" starting at '%s', ignoring.\n",
+                pInfo->name, c);
+    }
 }
 
 static int wheel_up_button = 4;
