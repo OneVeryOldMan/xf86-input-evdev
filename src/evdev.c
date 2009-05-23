@@ -132,6 +132,33 @@ static Atom prop_axis_label = 0;
 static Atom prop_btn_label = 0;
 #endif
 
+#define remapKey(ev,x) (ev->keyremap && ev->keyremap->sl[(x)/256] ? ev->keyremap->sl[(x)/256]->cd[(x)%256] : (x))
+
+void addRemap(EvdevPtr ev,uint16_t code,uint8_t value) {
+  uint8_t slice=code/256;
+  uint8_t offs=code%256;
+  if (!ev->map) {
+    ev->map=(EvdevKeyRemapPtr)malloc(sizeof(EvdevKeyRemap));
+    memset(ev->map,0,sizeof(EvdevKeyRemap));
+  }
+  if (!ev->map->sl[slice]) {
+    ev->map->sl[slice]=(EvdevKeyRemapSlice*)malloc(sizeof(EvdevKeyRemapSlice));
+    memset(ev->map->sl[slice],0,sizeof(EvdevKeyRemapSlice));
+  }
+  ev->map->sl[slice]->cd[offs]=value;
+}
+
+void freeRemap(EvdevPtr ev) {
+  uint16_t slice;
+  if (!ev->map) return;
+  for (slice=0;slice<256;++slice) {
+    if (!ev->map->sl[slice]) continue;
+    free(ev->map->sl[slice]);
+  }
+  free(ev->map);
+  ev->map=0;
+}
+
 /* All devices the evdev driver has allocated and knows about.
  * MAXDEVICES is safe as null-terminated array, as two devices (VCP and VCK)
  * cannot be used by evdev, leaving us with a space of 2 at the end. */
@@ -274,6 +301,7 @@ EvdevQueueKbdEvent(InputInfoPtr pInfo, struct input_event *ev, int value)
             )
 	return;
 
+    code=remapKey((EvdevPtr)pInfo->private,code);
     if (code > 255)
     {
         if (ev->code <= KEY_MAX && !warned[ev->code])

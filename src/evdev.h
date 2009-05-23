@@ -99,6 +99,9 @@ typedef struct {
     int val;		/* State of the key/button; pressed or released. */
 } EventQueueRec, *EventQueuePtr;
 
+typedef struct {uint8_t cd[256];} EvdevKeyRemapSlice;
+typedef struct {EvdevKeyRemapSlice* sl[256];} EvdevKeyRemap, *EvdevKeyRemapPtr;
+
 typedef struct {
     const char *device;
     int grabDevice;         /* grab the event device? */
@@ -158,6 +161,8 @@ typedef struct {
     } calibration;
 
     unsigned char btnmap[32];           /* config-file specified button mapping */
+
+  EvdevKeyRemapPtr keyremap;
 
     int reopen_attempts; /* max attempts to re-open after read failure */
     int reopen_left;     /* number of attempts left to re-open the device */
