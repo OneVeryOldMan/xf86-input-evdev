@@ -22,26 +22,28 @@
 
 AC_PREREQ(2.57)
 AC_INIT([xf86-input-evdev],
-        2.3.2,
+        2.4.0,
         [https://bugs.freedesktop.org/enter_bug.cgi?product=xorg],
         xf86-input-evdev)
 
 AC_CONFIG_SRCDIR([Makefile.am])
 AC_CONFIG_AUX_DIR(.)
-AM_INIT_AUTOMAKE([dist-bzip2])
+AM_INIT_AUTOMAKE([foreign dist-bzip2])
 
 AM_MAINTAINER_MODE
 
 # Require xorg-macros: XORG_DEFAULT_OPTIONS
-m4_ifndef([XORG_MACROS_VERSION], [AC_FATAL([must install xorg-macros 1.3 or later before running autoconf/autogen])])
+m4_ifndef([XORG_MACROS_VERSION], 
+          [m4_fatal([must install xorg-macros 1.3 or later before running autoconf/autogen])])
 XORG_MACROS_VERSION(1.3)
+XORG_DEFAULT_OPTIONS
+
 AM_CONFIG_HEADER([config.h])
 
 # Checks for programs.
 AC_DISABLE_STATIC
 AC_PROG_LIBTOOL
 AC_PROG_CC
-XORG_DEFAULT_OPTIONS
 
 AH_TOP([#include "xorg-server.h"])
 
@@ -53,10 +55,13 @@ AC_ARG_WITH(xorg-module-dir,
 inputdir=${moduledir}/input
 AC_SUBST(inputdir)
 
+# Checks for extensions
+XORG_DRIVER_CHECK_EXT(XINPUT, inputproto)
+
 # Checks for pkg-config packages. We need to be able to override sdkdir
 # to satisfy silly distcheck requirements.
 PKG_CHECK_MODULES(XORG, xorg-server xproto $REQUIRED_MODULES)
-XORG_CFLAGS="$CWARNFLAGS $XORG_CFLAGS"
+
 AC_ARG_WITH([sdkdir], [],
     [sdkdir="$withval"],
     [sdkdir=`$PKG_CONFIG --variable=sdkdir xorg-server`])

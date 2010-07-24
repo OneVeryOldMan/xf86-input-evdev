@@ -32,6 +32,7 @@
 #endif
 
 #include <X11/keysym.h>
+#include <X11/extensions/XI.h>
 
 #include <sys/stat.h>
 #include <unistd.h>
@@ -80,19 +81,6 @@
 
 #define ArrayLength(a) (sizeof(a) / (sizeof((a)[0])))
 
-/* evdev flags */
-#define EVDEV_KEYBOARD_EVENTS	(1 << 0)
-#define EVDEV_BUTTON_EVENTS	(1 << 1)
-#define EVDEV_RELATIVE_EVENTS	(1 << 2)
-#define EVDEV_ABSOLUTE_EVENTS	(1 << 3)
-#define EVDEV_TOUCHPAD		(1 << 4)
-#define EVDEV_INITIALIZED	(1 << 5) /* WheelInit etc. called already? */
-#define EVDEV_TOUCHSCREEN	(1 << 6)
-#define EVDEV_CALIBRATED	(1 << 7) /* run-time calibrated? */
-#define EVDEV_TABLET		(1 << 8) /* device looks like a tablet? */
-#define EVDEV_UNIGNORE_ABSOLUTE (1 << 9) /* explicitly unignore abs axes */
-#define EVDEV_UNIGNORE_RELATIVE (1 << 10) /* explicitly unignore rel axes */
-
 #define MIN_KEYCODE 8
 #define GLYPHS_PER_KEY 2
 #define AltMask		Mod1Mask
@@ -117,6 +105,7 @@ static const char *evdevDefaults[] = {
 static int EvdevOn(DeviceIntPtr);
 static int EvdevCacheCompare(InputInfoPtr pInfo, BOOL compare);
 static void EvdevKbdCtrl(DeviceIntPtr device, KeybdCtrl *ctrl);
+static int EvdevSwitchMode(ClientPtr client, DeviceIntPtr device, int mode);
 
 #ifdef HAVE_PROPERTIES
 static void EvdevInitAxesLabels(EvdevPtr pEvdev, int natoms, Atom *atoms);
@@ -125,7 +114,6 @@ static void EvdevInitProperty(DeviceIntPtr dev);
 static int EvdevSetProperty(DeviceIntPtr dev, Atom atom,
                             XIPropertyValuePtr val, BOOL checkonly);
 static Atom prop_invert = 0;
-static Atom prop_reopen = 0;
 static Atom prop_calibration = 0;
 static Atom prop_swap = 0;
 static Atom prop_axis_label = 0;
@@ -176,6 +164,38 @@ freeRemap(EvdevPtr ev)
  * MAXDEVICES is safe as null-terminated array, as two devices (VCP and VCK)
  * cannot be used by evdev, leaving us with a space of 2 at the end. */
 static EvdevPtr evdev_devices[MAXDEVICES] = {NULL};
+
+static int EvdevSwitchMode(ClientPtr client, DeviceIntPtr device, int mode)
+{
+    InputInfoPtr pInfo;
+    EvdevPtr pEvdev;
+
+    pInfo = device->public.devicePrivate;
+    pEvdev = pInfo->private;
+
+    if (pEvdev->flags & EVDEV_RELATIVE_EVENTS)
+    {
+        if (mode == Relative)
+            return Success;
+        else
+            return XI_BadMode;
+    }
+
+    switch (mode) {
+        case Absolute:
+            pEvdev->flags &= ~EVDEV_RELATIVE_MODE;
+            break;
+
+        case Relative:
+            pEvdev->flags |= EVDEV_RELATIVE_MODE;
+            break;
+
+        default:
+            return XI_BadMode;
+    }
+
+    return Success;
+}
 
 static size_t CountBits(unsigned long *array, size_t nlongs)
 {
@@ -352,19 +372,6 @@ EvdevQueueKbdEvent(InputInfoPtr pInfo, struct input_event *ev, int value)
             )
 	return;
 
-    if (code > 255)
-    {
-        if (ev->code <= KEY_MAX && !warned[ev->code])
-        {
-            xf86Msg(X_WARNING, "%s: unable to handle keycode %d\n",
-                    pInfo->name, ev->code);
-            warned[ev->code] = 1;
-        }
-
-        /* The X server can't handle keycodes > 255. */
-        return;
-    }
-
     if (pEvdev->num_queue >= EVDEV_MAXQUEUE)
     {
         xf86Msg(X_NONE, "%s: dropping event due to full queue!\n", pInfo->name);
@@ -418,56 +425,6 @@ EvdevQueueButtonClicks(InputInfoPtr pInfo, int button, int count)
     }
 }
 
-/**
- * Coming back from resume may leave us with a file descriptor that can be
- * opened but fails on the first read (ENODEV).
- * In this case, try to open the device until it becomes available or until
- * the predefined count expires.
- */
-static CARD32
-EvdevReopenTimer(OsTimerPtr timer, CARD32 time, pointer arg)
-{
-    InputInfoPtr pInfo = (InputInfoPtr)arg;
-    EvdevPtr pEvdev = pInfo->private;
-
-    do {
-        pInfo->fd = open(pEvdev->device, O_RDWR | O_NONBLOCK, 0);
-    } while (pInfo->fd < 0 && errno == EINTR);
-
-    if (pInfo->fd != -1)
-    {
-        if (EvdevCacheCompare(pInfo, TRUE) == Success)
-        {
-            xf86Msg(X_INFO, "%s: Device reopened after %d attempts.\n", pInfo->name,
-                    pEvdev->reopen_attempts - pEvdev->reopen_left + 1);
-            EvdevOn(pInfo->dev);
-        } else
-        {
-            xf86Msg(X_ERROR, "%s: Device has changed - disabling.\n",
-                    pInfo->name);
-            xf86DisableDevice(pInfo->dev, FALSE);
-            close(pInfo->fd);
-            pInfo->fd = -1;
-            pEvdev->min_maj = 0; /* don't hog the device */
-        }
-        pEvdev->reopen_left = 0;
-        return 0;
-    }
-
-    pEvdev->reopen_left--;
-
-    if (!pEvdev->reopen_left)
-    {
-        xf86Msg(X_ERROR, "%s: Failed to reopen device after %d attempts.\n",
-                pInfo->name, pEvdev->reopen_attempts);
-        xf86DisableDevice(pInfo->dev, FALSE);
-        pEvdev->min_maj = 0; /* don't hog the device */
-        return 0;
-    }
-
-    return 100; /* come back in 100 ms */
-}
-
 #define ABS_X_VALUE 0x1
 #define ABS_Y_VALUE 0x2
 #define ABS_VALUE   0x4
@@ -484,7 +441,7 @@ EvdevProcessValuators(InputInfoPtr pInfo, int v[MAX_VALUATORS], int *num_v,
     *num_v = *first_v = 0;
 
     /* convert to relative motion for touchpads */
-    if (pEvdev->abs && (pEvdev->flags & EVDEV_TOUCHPAD)) {
+    if (pEvdev->abs && (pEvdev->flags & EVDEV_RELATIVE_MODE)) {
         if (pEvdev->tool) { /* meaning, touch is active */
             if (pEvdev->old_vals[0] != -1)
                 pEvdev->delta[REL_X] = pEvdev->vals[0] - pEvdev->old_vals[0];
@@ -610,7 +567,7 @@ EvdevProcessButtonEvent(InputInfoPtr pInfo, struct input_event *ev)
 static void
 EvdevProcessRelativeMotionEvent(InputInfoPtr pInfo, struct input_event *ev)
 {
-    static int value;
+    int value;
     EvdevPtr pEvdev = pInfo->private;
 
     /* Get the signed value, earlier kernels had this as unsigned */
@@ -655,7 +612,7 @@ EvdevProcessRelativeMotionEvent(InputInfoPtr pInfo, struct input_event *ev)
 static void
 EvdevProcessAbsoluteMotionEvent(InputInfoPtr pInfo, struct input_event *ev)
 {
-    static int value;
+    int value;
     EvdevPtr pEvdev = pInfo->private;
 
     /* Get the signed value, earlier kernels had this as unsigned */
@@ -666,6 +623,9 @@ EvdevProcessAbsoluteMotionEvent(InputInfoPtr pInfo, struct input_event *ev)
         return;
 
     if (ev->code > ABS_MAX)
+        return;
+
+    if (EvdevWheelEmuFilterMotion(pInfo, ev))
         return;
 
     pEvdev->vals[pEvdev->axis_map[ev->code]] = value;
@@ -683,7 +643,7 @@ EvdevProcessAbsoluteMotionEvent(InputInfoPtr pInfo, struct input_event *ev)
 static void
 EvdevProcessKeyEvent(InputInfoPtr pInfo, struct input_event *ev)
 {
-    static int value;
+    int value;
     EvdevPtr pEvdev = pInfo->private;
 
     /* Get the signed value, earlier kernels had this as unsigned */
@@ -843,7 +803,6 @@ EvdevReadInput(InputInfoPtr pInfo)
 {
     struct input_event ev[NUM_EVENTS];
     int i, len = sizeof(ev);
-    EvdevPtr pEvdev = pInfo->private;
 
     while (len == sizeof(ev))
     {
@@ -856,11 +815,6 @@ EvdevReadInput(InputInfoPtr pInfo)
                 xf86RemoveEnabledDevice(pInfo);
                 close(pInfo->fd);
                 pInfo->fd = -1;
-                if (pEvdev->reopen_timer)
-                {
-                    pEvdev->reopen_left = pEvdev->reopen_attempts;
-                    pEvdev->reopen_timer = TimerSet(pEvdev->reopen_timer, 0, 100, EvdevReopenTimer, pInfo);
-                }
             } else if (errno != EAGAIN)
             {
                 /* We use X_NONE here because it doesn't alloc */
@@ -1277,6 +1231,7 @@ EvdevAddAbsClass(DeviceIntPtr device)
     EvdevPtr pEvdev;
     int num_axes, axis, i = 0;
     Atom *atoms;
+    const char *mode;
 
     pInfo = device->public.devicePrivate;
     pEvdev = pInfo->private;
@@ -1348,6 +1303,22 @@ EvdevAddAbsClass(DeviceIntPtr device)
          TestBit(ABS_TILT_Y, pEvdev->abs_bitmask)))
         pInfo->flags |= XI86_POINTER_CAPABLE;
 
+    if (pEvdev->flags & EVDEV_TOUCHPAD)
+        pEvdev->flags |= EVDEV_RELATIVE_MODE;
+    else
+        pEvdev->flags &= ~EVDEV_RELATIVE_MODE;
+
+    if (xf86FindOption(pInfo->options, "Mode"))
+    {
+        mode = xf86SetStrOption(pInfo->options, "Mode", NULL);
+        if (!strcasecmp("absolute", mode))
+            pEvdev->flags &= ~EVDEV_RELATIVE_MODE;
+        else if (!strcasecmp("relative", mode))
+            pEvdev->flags |= EVDEV_RELATIVE_MODE;
+        else
+            xf86Msg(X_INFO, "%s: unknown mode, use default\n", pInfo->name);
+    }
+
     return Success;
 }
 
@@ -1409,6 +1380,9 @@ EvdevAddRelClass(DeviceIntPtr device)
                                        GetMotionHistorySize(), Relative))
         return !Success;
 
+    if (!InitPtrFeedbackClassDeviceStruct(device, EvdevPtrCtrlProc))
+        return !Success;
+
     for (axis = REL_X; axis <= REL_MAX; axis++)
     {
         int axnum = pEvdev->axis_map[axis];
@@ -1424,9 +1398,6 @@ EvdevAddRelClass(DeviceIntPtr device)
     }
 
     xfree(atoms);
-
-    if (!InitPtrFeedbackClassDeviceStruct(device, EvdevPtrCtrlProc))
-        return !Success;
 
     pInfo->flags |= XI86_POINTER_CAPABLE;
 
@@ -1635,9 +1606,6 @@ EvdevInit(DeviceIntPtr device)
 
 /**
  * Init all extras (wheel emulation, etc.) and grab the device.
- *
- * Coming from a resume, the grab may fail with ENODEV. In this case, we set a
- * timer to wake up and try to reopen the device later.
  */
 static int
 EvdevOn(DeviceIntPtr device)
@@ -1649,42 +1617,36 @@ EvdevOn(DeviceIntPtr device)
     pInfo = device->public.devicePrivate;
     pEvdev = pInfo->private;
 
-    if (pInfo->fd != -1 && pEvdev->grabDevice &&
-        (rc = ioctl(pInfo->fd, EVIOCGRAB, (void *)1)))
+    if (pInfo->fd == -1) /* after PreInit fd is still open */
     {
+        do {
+            pInfo->fd = open(pEvdev->device, O_RDWR | O_NONBLOCK, 0);
+        } while (pInfo->fd < 0 && errno == EINTR);
+
+        if (pInfo->fd < 0) {
+            xf86Msg(X_ERROR, "Unable to open evdev device \"%s\".\n",
+                    pEvdev->device);
+            return !Success;
+        }
+    }
+
+    if (pEvdev->grabDevice && (rc = ioctl(pInfo->fd, EVIOCGRAB, (void *)1)))
         xf86Msg(X_WARNING, "%s: Grab failed (%s)\n", pInfo->name,
                 strerror(errno));
 
-        /* ENODEV - device has disappeared after resume */
-        if (rc && errno == ENODEV)
-        {
-            close(pInfo->fd);
-            pInfo->fd = -1;
-        }
+    pEvdev->min_maj = EvdevGetMajorMinor(pInfo);
+    if (EvdevIsDuplicate(pInfo))
+    {
+        xf86Msg(X_WARNING, "%s: Refusing to enable duplicate device.\n",
+                pInfo->name);
+        return !Success;
     }
 
-    if (pInfo->fd == -1)
-    {
-        pEvdev->reopen_left = pEvdev->reopen_attempts;
-        pEvdev->reopen_timer = TimerSet(pEvdev->reopen_timer, 0, 100, EvdevReopenTimer, pInfo);
-    } else
-    {
-        pEvdev->min_maj = EvdevGetMajorMinor(pInfo);
-        if (EvdevIsDuplicate(pInfo))
-        {
-            xf86Msg(X_WARNING, "%s: Refusing to enable duplicate device.\n",
-                    pInfo->name);
-            return !Success;
-        }
-
-        pEvdev->reopen_timer = TimerSet(pEvdev->reopen_timer, 0, 0, NULL, NULL);
-
-        xf86FlushInput(pInfo->fd);
-        xf86AddEnabledDevice(pInfo);
-        EvdevMBEmuOn(pInfo);
-        pEvdev->flags |= EVDEV_INITIALIZED;
-        device->public.on = TRUE;
-    }
+    xf86FlushInput(pInfo->fd);
+    xf86AddEnabledDevice(pInfo);
+    EvdevMBEmuOn(pInfo);
+    pEvdev->flags |= EVDEV_INITIALIZED;
+    device->public.on = TRUE;
 
     return Success;
 }
@@ -1722,11 +1684,6 @@ EvdevProc(DeviceIntPtr device, int what)
         pEvdev->min_maj = 0;
         pEvdev->flags &= ~EVDEV_INITIALIZED;
 	device->public.on = FALSE;
-        if (pEvdev->reopen_timer)
-        {
-            TimerFree(pEvdev->reopen_timer);
-            pEvdev->reopen_timer = NULL;
-        }
 	break;
 
     case DEVICE_CLOSE:
@@ -1892,6 +1849,7 @@ static int
 EvdevProbe(InputInfoPtr pInfo)
 {
     int i, has_rel_axes, has_abs_axes, has_keys, num_buttons, has_scroll;
+    int has_lmr; /* left middle right */
     int kernel24 = 0;
     int ignore_abs = 0, ignore_rel = 0;
     EvdevPtr pEvdev = pInfo->private;
@@ -1934,6 +1892,7 @@ EvdevProbe(InputInfoPtr pInfo)
     has_abs_axes = FALSE;
     has_keys = FALSE;
     has_scroll = FALSE;
+    has_lmr = FALSE;
     num_buttons = 0;
 
     /* count all buttons */
@@ -1947,6 +1906,10 @@ EvdevProbe(InputInfoPtr pInfo)
                 num_buttons = mapping;
         }
     }
+
+    has_lmr = TestBit(BTN_LEFT, pEvdev->key_bitmask) ||
+                TestBit(BTN_MIDDLE, pEvdev->key_bitmask) ||
+                TestBit(BTN_RIGHT, pEvdev->key_bitmask);
 
     if (num_buttons)
     {
@@ -2020,7 +1983,7 @@ EvdevProbe(InputInfoPtr pInfo)
                 }
             } else if (TestBit(ABS_PRESSURE, pEvdev->abs_bitmask) ||
                 TestBit(BTN_TOUCH, pEvdev->key_bitmask)) {
-                if (num_buttons || TestBit(BTN_TOOL_FINGER, pEvdev->key_bitmask)) {
+                if (has_lmr || TestBit(BTN_TOOL_FINGER, pEvdev->key_bitmask)) {
                     xf86Msg(X_INFO, "%s: Found absolute touchpad.\n", pInfo->name);
                     pEvdev->flags |= EVDEV_TOUCHPAD;
                     memset(pEvdev->old_vals, -1, sizeof(int) * pEvdev->num_vals);
@@ -2129,7 +2092,7 @@ EvdevPreInit(InputDriverPtr drv, IDevPtr dev, int flags)
     pInfo->history_size = 0;
     pInfo->control_proc = NULL;
     pInfo->close_proc = NULL;
-    pInfo->switch_mode = NULL;
+    pInfo->switch_mode = EvdevSwitchMode;
     pInfo->conversion_proc = NULL;
     pInfo->reverse_conversion_proc = NULL;
     pInfo->dev = NULL;
@@ -2182,7 +2145,6 @@ EvdevPreInit(InputDriverPtr drv, IDevPtr dev, int flags)
         return NULL;
     }
 
-    pEvdev->reopen_attempts = xf86SetIntOption(pInfo->options, "ReopenAttempts", 10);
     pEvdev->invert_x = xf86SetBoolOption(pInfo->options, "InvertX", FALSE);
     pEvdev->invert_y = xf86SetBoolOption(pInfo->options, "InvertY", FALSE);
     pEvdev->swap_axes = xf86SetBoolOption(pInfo->options, "SwapAxes", FALSE);
@@ -2570,18 +2532,6 @@ EvdevInitProperty(DeviceIntPtr dev)
     EvdevPtr     pEvdev = pInfo->private;
     int          rc;
     BOOL         invert[2];
-    char         reopen;
-
-    prop_reopen = MakeAtom(EVDEV_PROP_REOPEN, strlen(EVDEV_PROP_REOPEN),
-            TRUE);
-
-    reopen = pEvdev->reopen_attempts;
-    rc = XIChangeDeviceProperty(dev, prop_reopen, XA_INTEGER, 8,
-                                PropModeReplace, 1, &reopen, FALSE);
-    if (rc != Success)
-        return;
-
-    XISetDevicePropertyDeletable(dev, prop_reopen, FALSE);
 
     if (pEvdev->flags & (EVDEV_RELATIVE_EVENTS | EVDEV_ABSOLUTE_EVENTS))
     {
@@ -2674,13 +2624,6 @@ EvdevSetProperty(DeviceIntPtr dev, Atom atom, XIPropertyValuePtr val,
             pEvdev->invert_x = data[0];
             pEvdev->invert_y = data[1];
         }
-    } else if (atom == prop_reopen)
-    {
-        if (val->format != 8 || val->size != 1 || val->type != XA_INTEGER)
-            return BadMatch;
-
-        if (!checkonly)
-            pEvdev->reopen_attempts = *((CARD8*)val->data);
     } else if (atom == prop_calibration)
     {
         if (val->format != 32 || val->type != XA_INTEGER)
