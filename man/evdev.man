@@ -257,6 +257,18 @@ Sets the resolution of the device in dots per inch. The resolution is used
 to scale relative motion events from mouse devices to 1000 DPI resolution. This
 can be used to make high resolution mice less sensitive without turning off
 acceleration. If set to 0 no scaling will be performed. Default: "0".
+.TP 7
+.BI "Option \*qevent_key_remap\*q \*q" "integer=integer ..." \*q
+Specifies a set of mappings for key events; the number on the
+left-hand side of the equal sign must be an evdev keycode (look it up
+with
+.B "showkey -k"
+; it can be between 0 and 65535), the number on the right-hand side of
+the equal sign must be an X11 keycode (look it up in the
+.B "__projectroot__/share/X11/xkb/keycodes/evdev"
+file; it can be between 8 and 255). Integers can be specified as in C
+source files (base-10, base-8 if they start with 0, base-16 if they
+start with 0x).
 
 .SH SUPPORTED PROPERTIES
 The following properties are provided by the

@@ -127,6 +127,46 @@ static Atom prop_device;
 static Atom prop_virtual;
 static Atom prop_scroll_dist;
 
+static uint16_t
+remapKey(EvdevPtr ev, uint16_t code)
+{
+    uint8_t slice=code/256;
+    uint8_t offs=code%256;
+
+    if (!ev->keyremap) return code;
+    if (!(ev->keyremap->sl[slice])) return code;
+    if (!(ev->keyremap->sl[slice]->cd[offs])) return code;
+    return ev->keyremap->sl[slice]->cd[offs];
+}
+
+static void
+addRemap(EvdevPtr ev,uint16_t code,uint8_t value)
+{
+    uint8_t slice=code/256;
+    uint8_t offs=code%256;
+
+    if (!ev->keyremap) {
+        ev->keyremap=(EvdevKeyRemapPtr)calloc(sizeof(EvdevKeyRemap),1);
+    }
+    if (!ev->keyremap->sl[slice]) {
+        ev->keyremap->sl[slice]=(EvdevKeyRemapSlice*)calloc(sizeof(EvdevKeyRemapSlice),1);
+     }
+     ev->keyremap->sl[slice]->cd[offs]=value;
+}
+
+static void
+freeRemap(EvdevPtr ev)
+{
+    uint16_t slice;
+    if (!ev->keyremap) return;
+    for (slice=0;slice<256;++slice) {
+        if (!ev->keyremap->sl[slice]) continue;
+        free(ev->keyremap->sl[slice]);
+    }
+    free(ev->keyremap);
+    ev->keyremap=0;
+}
+
 static int EvdevSwitchMode(ClientPtr client, DeviceIntPtr device, int mode)
 {
     InputInfoPtr pInfo;
@@ -259,6 +299,42 @@ out:
 }
 
 
+static void
+SetRemapOption(InputInfoPtr pInfo,const char* name)
+{
+    char *s,*c;
+    unsigned long int code,value;
+    int consumed;
+    EvdevPtr ev = pInfo->private;
+
+    s = xf86SetStrOption(pInfo->options, name, NULL);
+    if (!s) return;
+    if (!s[0]) {
+        free(s);
+        return;
+    }
+
+    c=s;
+    while (sscanf(c," %li = %li %n",&code,&value,&consumed) > 1) {
+        c+=consumed;
+        if (code < 0 || code > 65535L) {
+            xf86Msg(X_ERROR,"%s: input code %ld out of range for option \"event_key_remap\", ignoring.\n",pInfo->name,code);
+            continue;
+        }
+        if (value < MIN_KEYCODE || value > 255) {
+            xf86Msg(X_ERROR,"%s: output value %ld out of range for option \"event_key_remap\", ignoring.\n",pInfo->name,value);
+            continue;
+        }
+        xf86Msg(X_INFO,"%s: remapping %ld into %ld.\n",pInfo->name,code,value);
+        addRemap(ev,code,value-MIN_KEYCODE);
+    }
+
+    if (*c!='\0') {
+        xf86Msg(X_ERROR, "%s: invalid input for option \"event_key_remap\" starting at '%s', ignoring.\n",
+                pInfo->name, c);
+    }
+}
+
 static EventQueuePtr
 EvdevNextInQueue(InputInfoPtr pInfo)
 {
@@ -277,7 +353,7 @@ EvdevNextInQueue(InputInfoPtr pInfo)
 void
 EvdevQueueKbdEvent(InputInfoPtr pInfo, struct input_event *ev, int value)
 {
-    int code = ev->code + MIN_KEYCODE;
+    int code = remapKey((EvdevPtr)(pInfo->private),ev->code) + MIN_KEYCODE;
     EventQueuePtr pQueue;
 
     /* Filter all repeated events from device.
@@ -1144,6 +1220,8 @@ EvdevAddKeyClass(DeviceIntPtr device)
     rmlvo.layout = xf86SetStrOption(pInfo->options, "xkb_layout", defaults.layout);
     rmlvo.variant = xf86SetStrOption(pInfo->options, "xkb_variant", defaults.variant);
     rmlvo.options = xf86SetStrOption(pInfo->options, "xkb_options", defaults.options);
+
+    SetRemapOption(pInfo,"event_key_remap");
 
     if (!InitKeyboardDeviceStruct(device, &rmlvo, NULL, EvdevKbdCtrl))
         rc = !Success;
@@ -2019,6 +2097,7 @@ EvdevProc(DeviceIntPtr device, int what)
 	xf86IDrvMsg(pInfo, X_INFO, "Close\n");
         EvdevCloseDevice(pInfo);
         EvdevFreeMasks(pEvdev);
+        freeRemap(pEvdev);
         pEvdev->min_maj = 0;
 	break;
 
