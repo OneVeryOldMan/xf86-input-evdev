@@ -393,7 +393,7 @@ SetRemapOption(InputInfoPtr pInfo,const char* name,EvdevPtr ev)
             continue;
         }
         if (value < MIN_KEYCODE || value > 255) {
-            xf86Msg(X_ERROR,"%s: output value %ld out of range for option \"event_key_remap\", ignoring.\n",pInfo->name,code);
+            xf86Msg(X_ERROR,"%s: output value %ld out of range for option \"event_key_remap\", ignoring.\n",pInfo->name,value);
             continue;
         }
         xf86Msg(X_INFO,"%s: remapping %ld into %ld.\n",pInfo->name,code,value);
