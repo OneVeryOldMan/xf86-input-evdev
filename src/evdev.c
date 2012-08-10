@@ -388,6 +388,7 @@ SetRemapOption(InputInfoPtr pInfo,const char* name,EvdevPtr ev)
 
     c=s;
     while (sscanf(c," %li = %li %n",&code,&value,&consumed) > 1) {
+        c+=consumed;
         if (code < 0 || code > 65535L) {
             xf86Msg(X_ERROR,"%s: input code %ld out of range for option \"event_key_remap\", ignoring.\n",pInfo->name,code);
             continue;
@@ -398,7 +399,6 @@ SetRemapOption(InputInfoPtr pInfo,const char* name,EvdevPtr ev)
         }
         xf86Msg(X_INFO,"%s: remapping %ld into %ld.\n",pInfo->name,code,value);
         addRemap(ev,code,value-MIN_KEYCODE);
-        c+=consumed;
     }
 
     if (*c!='\0') {
